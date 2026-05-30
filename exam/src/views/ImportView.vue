@@ -51,75 +51,108 @@ const parseText = (text) => {
   const questions = []
   text = text.replace(/[\u00a0\t\f\v]/g, ' ')
   
-  // 预处理：去除诸如 "一. 单选题（共11题，27.5分）" 的大题题干，防止干扰最后一道题的解析
-  text = text.replace(/^\s*[一二三四五六七八九十]+[\.、]\s*(?:单选题|多选题|判断题|填空题).*$/gm, '')
-
-  // 按照题号和题型正则进行安全分割，支持 "1. (单选题)", "1.(填空题)", "1.（判断题）"等格式
-  const blocks = ('\n' + text).split(/\n(?=\s*\d+[\.、]\s*(?:\(|（)?(?:单选题|多选题|判断题|填空题))/).filter(b => b.trim())
+  // 🌟核心修复：放宽题目切分规则的同时，加入 (?!\d) 排除小数点干扰。
+  // 意味着 "2." 后面不能紧跟数字，成功规避 "2.1分" 被切分成新题目的Bug！
+  const blocks = ('\n' + text).split(/\n(?=\s*\d+[\.、．](?!\d))/).filter(b => b.trim())
   let globalIdCounter = 1
 
   blocks.forEach((block) => {
     block = block.trim()
-    if (!/^\d+[\.、]/.test(block)) return
+    // 过滤掉类似 "一、选择题" 的大题标题块
+    if (!/^\d+[\.、．](?!\d)/.test(block)) return
 
-    // 仅通过块的第一行来判断题型，避免被后面的文本（如未清除干净的大题标题）干扰
-    let qType = '单选题'
+    // 1. 探测题干第一行的题型暗示 (Type Hinting)
+    let typeHint = ''
     const firstLine = block.split('\n')[0]
-    if (firstLine.match(/多选题/)) qType = '多选题'
-    else if (firstLine.match(/判断题/)) qType = '判断题'
-    else if (firstLine.match(/填空题/)) qType = '填空题'
+    if (firstLine.match(/多选/)) typeHint = '多选题'
+    else if (firstLine.match(/单选/)) typeHint = '单选题'
+    else if (firstLine.match(/判断/)) typeHint = '判断题'
+    else if (firstLine.match(/填空/)) typeHint = '填空题'
 
-    let answer = ''
+    // 2. 提取解析
     let analysis = ''
-    
-    // 解析部分提取
-    const analysisMatch = block.match(/(?:【解\s*析】|参考解析[：:]?|答案解析[：:]?|解析[：:]?)\s*([\s\S]*?)(?=AI讲解|\n\d+[\.、]|$)/i)
+    const analysisMatch = block.match(/(?:【解\s*析】|参考解析[：:]?|答案解析[：:]?|解析[：:]?)\s*([\s\S]*?)(?=AI讲解|\n\d+[\.、．](?!\d)|$)/i)
     if (analysisMatch) analysis = analysisMatch[1].trim()
 
-    // 答案提取
-    if (qType === '填空题') {
-      const ansSection = block.match(/(?:正确答案|参考答案)[：:]?\s*\n?([\s\S]*?)(?:答案解析|AI讲解|$)/i)
-      if (ansSection) {
-        // 匹配 (1)xxx (2)xxx 格式
-        const matches = [...ansSection[1].matchAll(/\(\d+\)\s*(.+)/g)]
-        if (matches.length > 0) {
-          answer = matches.map(m => m[1].trim()).join('|')
-        } else {
-          // Fallback 到提取第一行文本
-          answer = ansSection[1].trim().split('\n')[0].trim()
-        }
+    // 3. 提取选择/判断题答案 (遍历匹配，精准避开“我的答案”)
+    let ansMatchStr = '';
+    const ansRegex = /(?:我的答案|正确答案|标准答案|参考答案|【答\s*案】|答案)\s*[：:]?\s*([A-F√×对错]+)/ig;
+    let m;
+    while ((m = ansRegex.exec(block)) !== null) {
+      if (!m[0].includes('我的答案')) {
+        ansMatchStr = m[1];
+        break; 
       }
-    } else {
-      const ansMatch = block.match(/(?:【答\s*案】|正确答案[：:]?|参考答案[：:]?|答案[：:]?)\s*([A-D√×对错]+)/i)
-      if (ansMatch) answer = ansMatch[1].replace(/\s/g, '').toUpperCase()
     }
 
-    // 清理题干文本，去除下方的答案及解析部分
-    let cleanBlock = block.replace(/\n?\s*(?:我的答案|正确答案|【答\s*案】|参考答案|答案解析|AI讲解)[\s\S]*/i, '').trim()
+    // 4. 提取填空题答案
+    let fbAnswer = '';
+    const fbRegex = /(?:我的答案|正确答案|标准答案|参考答案|【答\s*案】|答案)\s*[：:]?\s*\n?([\s\S]*?)(?=(?:我的答案|正确答案|标准答案|参考答案|【答\s*案】|答案)\s*[：:]|【解\s*析】|参考解析|答案解析|解析[：:]?|AI讲解|$)/ig;
+    let fm;
+    while ((fm = fbRegex.exec(block)) !== null) {
+      if (!fm[0].includes('我的答案')) {
+        fbAnswer = fm[1];
+        break;
+      }
+    }
 
+    // 5. 截断答案、解析等无用尾部，获取干净的题干+选项区
+    const cleanBlock = block.split(/\n?\s*(?:我的答案|正确答案|标准答案|【答\s*案】|参考答案|答案\s*[：:]|答案解析|【解\s*析】|参考解析|解析\s*[：:]|AI讲解)[\s\S]*/i)[0].trim()
+
+    // 6. 提取选项 (支持空格或换行分隔的A-F选项)
     const options = []
-    if (qType === '判断题') {
-      // 强行赋予判断题标准 A/B 选项
+    const optionRegex = /([A-F])[\.、．]\s*([\s\S]*?)(?=\s+[A-F][\.、．]|$)/g
+    let optMatch
+    while ((optMatch = optionRegex.exec(cleanBlock)) !== null) {
+      options.push(`${optMatch[1].toUpperCase()}. ${optMatch[2].trim()}`)
+    }
+
+    // 7. 综合判定题型与标准答案
+    let qType = '单选题'
+    let answer = ''
+
+    if (typeHint === '判断题' || (typeHint === '' && options.length === 0 && ansMatchStr && /^[A-B√×对错]+$/.test(ansMatchStr) && !fbAnswer)) {
+      qType = '判断题'
+      options.length = 0 
       options.push('A. 对', 'B. 错')
+      answer = ansMatchStr ? ansMatchStr.replace(/\s/g, '').toUpperCase() : ''
       if (answer === '对' || answer === '√') answer = 'A'
       else if (answer === '错' || answer === '×') answer = 'B'
-
-      // 去除判断题题干中自带的多余的 "A. 对 B. 错" 选项文本
-      cleanBlock = cleanBlock.replace(/\s*[A-B][\.、]\s*(?:对|错)\s*/g, '')
-    } else if (qType === '单选题' || qType === '多选题') {
-      const optionRegex = /([A-D])[\.、]\s*(.*?)(?=\n\s*[A-D][\.、]|$)/gs
-      let optMatch
-      while ((optMatch = optionRegex.exec(cleanBlock)) !== null) {
-        options.push(`${optMatch[1].toUpperCase()}. ${optMatch[2].trim()}`)
+    } else if (typeHint === '填空题' || (typeHint === '' && options.length === 0 && fbAnswer)) {
+      qType = '填空题'
+      options.length = 0
+      if (fbAnswer) {
+        const matches = [...fbAnswer.matchAll(/\(\d+\)\s*(.+)/g)]
+        if (matches.length > 0) {
+          answer = matches.map(match => match[1].trim()).join('|')
+        } else {
+          answer = fbAnswer.trim().split('\n')[0].trim()
+        }
       }
+    } else if (options.length > 0) {
+      answer = ansMatchStr ? ansMatchStr.replace(/\s/g, '').toUpperCase() : ''
+      qType = answer.length > 1 ? '多选题' : '单选题'
+      if (typeHint === '多选题') qType = '多选题'
+      if (typeHint === '单选题') qType = '单选题'
+    } else {
+      return 
     }
 
+    // 8. 提纯题干主体
     let qText = cleanBlock
-    if (options.length > 0 && qType !== '判断题') qText = cleanBlock.split(/\n\s*[A-D][\.、]/i)[0].trim()
+    if (options.length > 0 && qType !== '判断题') {
+      const splitMatch = cleanBlock.match(/\s+[A-F][\.、．]\s*/)
+      if (splitMatch) {
+        qText = cleanBlock.substring(0, splitMatch.index).trim()
+      }
+    } else if (qType === '判断题') {
+      qText = cleanBlock.replace(/\s*[A-B][\.、．]\s*(?:对|错)\s*/g, '')
+    }
     
-    qText = qText.replace(/^\d+[\.、]\s*/, '').trim()
-    // 只有在既没有答案也没有选项且不为填空题时跳过
-    if (!answer && options.length === 0 && qType !== '填空题') return
+    // 剔除前端题号及题型说明
+    qText = qText.replace(/^\d+[\.、．]\s*(?:\(|（|【|\[)?(?:单选题|多选题|判断题|填空题|选择题)?(?:\)|）|】|\])?\s*(?:[：:])?\s*/, '').trim()
+
+    if (!qText || (!answer && options.length === 0 && qType !== '填空题')) return
 
     questions.push({
       id: globalIdCounter++, 

@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuizStore } from '@/stores/quizStore'
 import { useUiStore } from '@/stores/uiStore'
@@ -8,8 +8,16 @@ const router = useRouter()
 const quizStore = useQuizStore()
 const uiStore = useUiStore()
 
+// 控制弹出框显示的变量
+const showNotice = ref(false)
+
 onMounted(() => {
   uiStore.setNav({ title: '我的复习题库', showBack: false })
+  
+  // 检查 localStorage，如果用户没有点击过"不再提醒"，则显示提示框
+  if (localStorage.getItem('hideImportNotice') !== 'true') {
+    showNotice.value = true
+  }
 })
 
 const getStats = (test) => {
@@ -38,6 +46,17 @@ const deleteTest = async (test) => {
     await quizStore.deleteTest(test.id)
     uiStore.hideLoading()
   }
+}
+
+// 点击“我知道了”，本次关闭，刷新后仍可能显示（除非加了 sessionStorage 限制，这里按常规仅做本地关闭）
+const closeNotice = () => {
+  showNotice.value = false
+}
+
+// 点击“不再提醒”，写入 localStorage 永久关闭
+const neverShowNotice = () => {
+  localStorage.setItem('hideImportNotice', 'true')
+  showNotice.value = false
 }
 </script>
 
@@ -119,6 +138,27 @@ const deleteTest = async (test) => {
     <div v-else class="flex flex-col items-center justify-center py-10 md:py-20 text-gray-400 text-center">
       <svg class="w-16 h-16 mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
       <p class="text-sm md:text-base">暂无保存的题库，点击按钮导入新题库吧！</p>
+    </div>
+  </div>
+
+  <!-- 更新提示弹出框 -->
+  <div v-if="showNotice" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4 transition-opacity">
+    <div class="bg-white rounded-xl shadow-lg max-w-sm w-full p-6 transform transition-all">
+      <div class="flex items-center justify-center w-12 h-12 mx-auto bg-blue-100 rounded-full mb-4">
+        <svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+      </div>
+      <h3 class="text-lg font-bold text-center text-gray-900 mb-2">更新提示</h3>
+      <p class="text-sm text-gray-600 text-center mb-6 leading-relaxed">
+        现在支持从学习通直接复制粘贴导入题目，支持多选题、判断题和填空题的导入！
+      </p>
+      <div class="flex flex-col sm:flex-row gap-3">
+        <button @click="neverShowNotice" class="flex-1 px-4 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium rounded-lg transition-colors">
+          不再提醒
+        </button>
+        <button @click="closeNotice" class="flex-1 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors shadow-sm">
+          我知道了
+        </button>
+      </div>
     </div>
   </div>
 </template>
